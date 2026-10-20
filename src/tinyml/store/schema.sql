@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS projects (
     description   TEXT NOT NULL,
     spec          TEXT,              -- ProblemSpec JSON
     status        TEXT NOT NULL,     -- described | data_ready | needs_choice | trained | ranked | built | failed
+    chip_ids      TEXT,              -- the user's chip shortlist; empty means every chip of the vendor
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     selected      INTEGER NOT NULL DEFAULT 0,
     artifact_path TEXT,
     note          TEXT,
+    details       TEXT,              -- plain-English description, settings tried, cross-validation
     created_at    TEXT NOT NULL
 );
 
@@ -95,7 +97,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id            TEXT PRIMARY KEY,
     project_id    TEXT,
     kind          TEXT NOT NULL,
-    status        TEXT NOT NULL,     -- queued | running | done | failed
+    status        TEXT NOT NULL,     -- queued | running | pausing | paused | cancelling | cancelled | done | failed
     step          TEXT,
     progress      REAL NOT NULL DEFAULT 0,
     log           TEXT NOT NULL DEFAULT '',
@@ -111,5 +113,15 @@ CREATE TABLE IF NOT EXISTS step_cache (
     cache_key     TEXT PRIMARY KEY,
     step          TEXT NOT NULL,
     output        TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reviews (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL REFERENCES projects(id),
+    stage         TEXT NOT NULL,     -- data | model | rank | build
+    ref           TEXT NOT NULL,     -- what was reviewed (dataset, model, ranking or build id)
+    status        TEXT NOT NULL,     -- approved | changes_requested
+    note          TEXT,
     created_at    TEXT NOT NULL
 );

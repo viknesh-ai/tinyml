@@ -29,6 +29,12 @@ from tinyml.toolchains.common import (
 )
 
 TARGETS = {
+    "esp32": {
+        "gcc": "xtensa-esp32-elf-",
+        "flags": ["-mlongcalls"],
+        "qemu": "qemu-system-xtensa",
+        "machine": ["-M", "esp32", "-m", "4M"],
+    },
     "esp32s3": {
         "gcc": "xtensa-esp32s3-elf-",
         "flags": ["-mlongcalls"],

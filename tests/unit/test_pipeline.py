@@ -53,8 +53,9 @@ def test_every_rung_is_tried_and_the_user_can_switch(data_dir):
     result = stages.train(store, pid)
     assert result["chosen"]["rung"] == 1 and result["chosen"]["id"] == result["recommended"]
     rows = store.candidates(pid)
-    assert {r["rung"] for r in rows} == {1, 2, 3}
-    other = next(r for r in rows if r["rung"] == 3 and r["artifact_path"])
+    assert {r["rung"] for r in rows} == {1, 2}
+    assert all(r["details"]["title"] and r["details"]["why"] for r in rows)
+    other = next(r for r in rows if r["rung"] == 2 and r["artifact_path"])
     switched = stages.select_model(store, pid, other["id"])
     assert switched["host_parity"]["passed"]
     assert store.selected_candidate(pid)["id"] == other["id"]
@@ -90,3 +91,19 @@ def test_blocked_data_stops_training(tmp_path):
     assert ds["blocked"]
     with pytest.raises(stages.StageError):
         stages.train(store, pid)
+
+
+def test_settings_are_chosen_without_the_test_windows(data_dir):
+    store = get_store()
+    pid = stages.describe(store, "Alert me when my pump vibration looks abnormal. Battery, Wi-Fi.")["project"]["id"]
+    stages.ingest(store, pid, [data_dir / "pump.csv"])
+    t = stages._training_inputs(store, pid, lambda m: None)
+    split = t.split
+    assert split.val_faults.any() and not (split.val_faults & split.test).any()
+    assert split.folds and all(not (fit & split.test).any() and not (check & split.test).any()
+                               for fit, check in split.folds)
+    assert all(not (fit & check).any() for fit, check in split.folds)
+    result = stages.train(store, pid)
+    forest = next(c for c in result["candidates"] if c["algorithm"] == "isolation_forest")
+    assert forest["details"]["settings_tried"] >= 3
+    assert sum(s["chosen"] for s in forest["details"]["settings"]) == 1

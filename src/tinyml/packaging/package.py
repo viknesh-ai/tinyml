@@ -17,6 +17,26 @@ from tinyml.contracts import ChipMeasurement, GoldenSet, ProblemSpec, TaggedNumb
 from tinyml.packaging import signing
 
 PACKAGE_ROOT = "tinyml"
+# The two files a firmware project needs; everything else in the package is documentation and proof.
+ESSENTIALS = ("include/tinyml_model.h", "src/tinyml_model.c")
+FILE_NOTES = {
+    "include/tinyml_model.h": "The API: model_predict(), the window size and, for anomaly models, calibration.",
+    "src/tinyml_model.c": "The whole library in one portable C99 file: no heap, no maths library.",
+    "cpp/TinyMLModel.hpp": "Optional header-only C++ wrapper with a streaming push() helper.",
+    "example/main.c": "A sensor loop showing how to fill a window and call the model.",
+    "test/parity_main.c": "The parity harness that proved the library matches Python.",
+    "test/tinyml_port.h": "The small port interface the harness prints through.",
+    "test/port_host.c": "Port for running the parity test on a PC.",
+    "test/golden_vectors.h": "The golden test windows and Python's answers, as C arrays.",
+    "test/golden.json": "The same golden windows as JSON, read by check_parity.py.",
+    "test/check_parity.py": "Compares the harness output with Python's answers.",
+    "test/README.md": "How to re-run the parity test yourself.",
+    "model.json": "The model artifact the C code was generated from.",
+    "report.md": "Plain-words report: your request, data checks, choice, test results and every number with its tag.",
+    "manifest.json": "SHA-256 of every file, tool versions, seed and dataset hash.",
+    "manifest.sig": "Ed25519 signature of manifest.json.",
+    "signing_key.pub.pem": "Public key; run `tinyml verify <zip>` to check the signature and every file.",
+}
 
 
 def _tag(n: TaggedNumber | None, fmt: str = "{:,.0f}") -> str:
@@ -192,3 +212,34 @@ def verify_package(zip_path: Path) -> tuple[bool, str]:
     trusted = public.strip() == signing.public_pem().strip()
     note = "signed by this machine's key" if trusted else "signed by a different key (check key_id with the sender)"
     return True, f"valid signature, all {len(manifest['files'])} files intact; {note}"
+
+
+def package_files(zip_path: Path) -> list[dict[str, Any]]:
+    """Every file in a package with its size, SHA-256 (from the signed manifest) and what it is for."""
+    with zipfile.ZipFile(zip_path) as zf:
+        manifest = json.loads(zf.read(f"{PACKAGE_ROOT}/manifest.json"))
+        out = []
+        for info in sorted(zf.infolist(), key=lambda i: i.filename):
+            name = info.filename.removeprefix(f"{PACKAGE_ROOT}/")
+            out.append({"path": name, "bytes": info.file_size, "sha256": manifest["files"].get(name),
+                        "essential": name in ESSENTIALS, "note": FILE_NOTES.get(name, "")})
+    return out
+
+
+def read_package_file(zip_path: Path, name: str) -> bytes:
+    with zipfile.ZipFile(zip_path) as zf:
+        member = f"{PACKAGE_ROOT}/{name}"
+        if member not in zf.namelist():
+            raise KeyError(name)
+        return zf.read(member)
+
+
+def essentials_zip(zip_path: Path) -> tuple[str, bytes]:
+    """Just the header and the C file, byte-identical to the signed package, in a small zip."""
+    import io
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as out:
+        for name in ESSENTIALS:
+            out.writestr(Path(name).name, read_package_file(zip_path, name))
+    return zip_path.stem + "-source.zip", buffer.getvalue()

@@ -37,7 +37,8 @@ def firmware_dir() -> Path:
 
 
 def ui_dir() -> Path:
-    return repo_root() / "ui"
+    """The built web app. `ui/` holds its source; `npm --prefix ui run build` writes it here."""
+    return repo_root() / "ui" / "dist"
 
 
 def keys_dir() -> Path:
@@ -80,6 +81,7 @@ class Settings:
     max_golden_windows: int = 32
     parallel_chip_builds: int = 2
     emulator_timeout_s: int = 300
+    review_gates: bool = True  # each step waits until a person approves the previous step's review card
 
     @staticmethod
     def path() -> Path:

@@ -54,7 +54,7 @@ def describe(feature: FeatureDef) -> str:
     """Plain-English name used in explanations."""
     channel = "overall motion" if feature.channel == "mag" else f"'{feature.channel}'"
     words = {
-        "mean": "average level", "std": "spread", "rms": "vibration strength (RMS)", "peak": "peak level",
+        "mean": "average level", "std": "spread", "rms": "signal strength (RMS)", "peak": "peak level",
         "p2p": "peak-to-peak swing", "crest": "spikiness (crest factor)", "kurt": "sharp impacts (kurtosis)",
         "zcr": "how often it crosses its average", "domfreq": "strongest frequency", "centroid": "typical frequency",
         "band0": "energy in the lowest frequency band", "band1": "energy in the low-middle band",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -12,23 +13,29 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from tinyml import __version__
 from tinyml.catalog import get_catalog
 from tinyml.config import AssistantSettings, Settings, load_settings, ui_dir
+from tinyml.contracts import ProblemSpec
 from tinyml.datasets import synthetic
 from tinyml.decide import Decider
 from tinyml.decide.providers import ClaudeCodeProvider, ProviderUnavailable
-from tinyml.pipeline import stages
-from tinyml.pipeline.jobs import JobRunner
+from tinyml.packaging.package import essentials_zip, package_files, read_package_file
+from tinyml.pipeline import review, stages
+from tinyml.pipeline.jobs import JobConflict, JobRunner
+from tinyml.pipeline.measure import build_signature
+from tinyml.ranking.score import pre_filter
 from tinyml.recipes import load_recipes
 from tinyml.store import get_store, project_dir
 from tinyml.toolchains import doctor
 
 runner: JobRunner | None = None
+TESTABLE_TTL_S = 60.0
+_testable: tuple[float, dict[str, str | None]] = (0.0, {})
 
 
 @asynccontextmanager
@@ -58,8 +65,8 @@ def _stage(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except stages.StageError as exc:
         raise HTTPException(400, str(exc)) from exc
-    except KeyError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(400, str(exc).strip("'\"")) from exc
 
 
 # ---------------------------------------------------------------------------------------- system
@@ -77,6 +84,7 @@ class SettingsBody(BaseModel):
     provider: str | None = None
     claude_command: str | None = None
     claude_model: str | None = None
+    review_gates: bool | None = None
 
 
 @app.get("/api/settings")
@@ -96,12 +104,44 @@ def put_settings(body: SettingsBody) -> dict[str, Any]:
         assistant["claude_command"] = body.claude_command
     if body.claude_model is not None:
         assistant["claude_model"] = body.claude_model or None
-    new = Settings(**{**asdict(settings), "assistant": AssistantSettings(**assistant)})
+    rest = asdict(settings)
+    if body.review_gates is not None:
+        rest["review_gates"] = body.review_gates
+    new = Settings(**{**rest, "assistant": AssistantSettings(**assistant)})
     new.save()
     return asdict(new)
 
 
 # ---------------------------------------------------------------------------------------- catalog API
+def _testable_here() -> dict[str, str | None]:
+    """chip id -> None when this computer can build and emulate it, else why not (cached for a minute)."""
+    global _testable
+    stamp, cached = _testable
+    if time.time() - stamp < TESTABLE_TTL_S and cached:
+        return cached
+    result = {}
+    for chip in get_catalog().chips:
+        signature, why = build_signature(chip)
+        result[chip.id] = None if signature else why
+    _testable = (time.time(), result)
+    return result
+
+
+@app.get("/api/catalog")
+def catalog() -> dict[str, Any]:
+    """Vendors, cores and chips in one call, with whether each chip can be tested on this computer."""
+    cat = get_catalog()
+    testable = _testable_here()
+    chips = []
+    for chip in cat.chips:
+        core = cat.cores[chip.core]
+        chips.append({**chip.model_dump(), "name": chip.name, "core_description": core.description,
+                      "has_fpu": core.fpu != "none", "testable": testable.get(chip.id) is None,
+                      "not_testable_reason": testable.get(chip.id)})
+    vendors = [{**v.model_dump(), "chips": sum(1 for c in cat.chips if c.vendor == v.id)} for v in cat.vendors]
+    return {"info": cat.info.model_dump(), "vendors": vendors, "chips": chips}
+
+
 @app.get("/api/vendors")
 def vendors() -> list[dict[str, Any]]:
     return [v.model_dump() for v in get_catalog().vendors]
@@ -124,6 +164,20 @@ def chip(chip_id: str) -> dict[str, Any]:
         return get_catalog().chip(chip_id).model_dump()
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+class ChipCheckBody(BaseModel):
+    spec: dict[str, Any]
+
+
+@app.post("/api/chips/check")
+def chips_check(body: ChipCheckBody) -> dict[str, str | None]:
+    """For a draft of the requirements: chip id -> why it would be left out before building, or None."""
+    try:
+        spec = ProblemSpec(**body.spec)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {c.id: pre_filter(c, spec) for c in get_catalog().chips}
 
 
 @app.get("/api/recipes")
@@ -165,12 +219,16 @@ def get_project(project_id: str) -> dict[str, Any]:
         "preview": json.loads(preview_path.read_text()) if preview_path.exists() else None,
         "pending_decisions": pending,
         "project": project,
+        "chip_ids": project.get("chip_ids") or [],
         "dataset": dataset,
         "candidates": store.candidates(project_id),
         "training": json.loads(training_path.read_text()) if training_path.exists() else None,
         "chip_results": store.chip_results(project_id),
         "builds": store.builds(project_id),
         "jobs": store.jobs(project_id)[:10],
+        "active_job": store.active_job(project_id),
+        "reviews": review.cards(store, project_id),
+        "review_gates": load_settings().review_gates,
     }
 
 
@@ -178,6 +236,16 @@ def get_project(project_id: str) -> dict[str, Any]:
 def patch_spec(project_id: str, changes: dict[str, Any]) -> dict[str, Any]:
     _project(project_id)
     return _stage(stages.update_spec, _store(), project_id, changes).model_dump()
+
+
+class ChipsBody(BaseModel):
+    chip_ids: list[str]
+
+
+@app.put("/api/projects/{project_id}/chips")
+def put_chips(project_id: str, body: ChipsBody) -> dict[str, Any]:
+    _project(project_id)
+    return {"chip_ids": _stage(stages.set_chip_shortlist, _store(), project_id, body.chip_ids)}
 
 
 @app.post("/api/projects/{project_id}/datasets")
@@ -243,10 +311,20 @@ def _runner() -> JobRunner:
     return runner
 
 
+def _submit(kind: str, project_id: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    blocked = review.gate(_store(), project_id, kind)
+    if blocked:
+        raise HTTPException(409, blocked)
+    try:
+        return _runner().submit(kind, project_id, params)
+    except JobConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.post("/api/projects/{project_id}/train")
 def train(project_id: str) -> dict[str, Any]:
     _project(project_id)
-    return _runner().submit("train", project_id)
+    return _submit("train", project_id)
 
 
 class SelectBody(BaseModel):
@@ -258,20 +336,23 @@ def select(project_id: str, body: SelectBody) -> dict[str, Any]:
     _project(project_id)
     if not any(c["id"] == body.candidate_id for c in _store().candidates(project_id)):
         raise HTTPException(404, "candidate not found")
-    return _runner().submit("select", project_id, {"candidate_id": body.candidate_id})
+    return _submit("select", project_id, {"candidate_id": body.candidate_id})
 
 
 @app.post("/api/projects/{project_id}/rank")
 def rank(project_id: str, body: RankBody) -> dict[str, Any]:
     _project(project_id)
-    return _runner().submit("rank", project_id, {"chips": body.chips})
+    return _submit("rank", project_id, {"chips": body.chips})
 
 
 @app.post("/api/projects/{project_id}/build")
 def build(project_id: str, body: BuildBody) -> dict[str, Any]:
     _project(project_id)
-    get_catalog().chip(body.chip_id)
-    return _runner().submit("build", project_id, {"chip_id": body.chip_id})
+    try:
+        get_catalog().chip(body.chip_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return _submit("build", project_id, {"chip_id": body.chip_id})
 
 
 @app.get("/api/jobs/{job_id}")
@@ -282,6 +363,49 @@ def job(job_id: str) -> dict[str, Any]:
     return row
 
 
+def _control(action: str, job_id: str) -> dict[str, Any]:
+    if _store().job(job_id) is None:
+        raise HTTPException(404, "job not found")
+    try:
+        return getattr(_runner(), action)(job_id)
+    except JobConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/jobs/{job_id}/pause")
+def pause_job(job_id: str) -> dict[str, Any]:
+    return _control("pause", job_id)
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def resume_job(job_id: str) -> dict[str, Any]:
+    return _control("resume_job", job_id)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, Any]:
+    return _control("cancel", job_id)
+
+
+# ---------------------------------------------------------------------------------------- reviews
+class ReviewBody(BaseModel):
+    stage: str
+    status: str
+    note: str | None = None
+
+
+@app.get("/api/projects/{project_id}/reviews")
+def reviews(project_id: str) -> list[dict[str, Any]]:
+    _project(project_id)
+    return review.cards(_store(), project_id)
+
+
+@app.post("/api/projects/{project_id}/reviews")
+def post_review(project_id: str, body: ReviewBody) -> dict[str, Any]:
+    _project(project_id)
+    return _stage(review.record, _store(), project_id, body.stage, body.status, body.note)
+
+
 # ---------------------------------------------------------------------------------------- builds
 def _build(build_id: str) -> dict[str, Any]:
     row = _store().build(build_id)
@@ -290,70 +414,123 @@ def _build(build_id: str) -> dict[str, Any]:
     return row
 
 
-@app.get("/api/builds/{build_id}/download")
-def download(build_id: str) -> FileResponse:
+def _package(build_id: str) -> Path:
     row = _build(build_id)
     if not row["package_path"] or not Path(row["package_path"]).exists():
         raise HTTPException(404, "this build has no package (parity failed or file removed)")
-    return FileResponse(row["package_path"], filename=Path(row["package_path"]).name, media_type="application/zip")
+    return Path(row["package_path"])
+
+
+@app.get("/api/builds/{build_id}/download")
+def download(build_id: str) -> FileResponse:
+    pkg = _package(build_id)
+    return FileResponse(pkg, filename=pkg.name, media_type="application/zip")
+
+
+@app.get("/api/builds/{build_id}/download/essentials")
+def download_essentials(build_id: str) -> Response:
+    name, data = essentials_zip(_package(build_id))
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.get("/api/builds/{build_id}/report", response_class=PlainTextResponse)
 def report(build_id: str) -> str:
-    row = _build(build_id)
-    if not row["package_path"]:
-        raise HTTPException(404, "no report: this build was blocked")
-    with zipfile.ZipFile(row["package_path"]) as zf:
-        return zf.read("tinyml/report.md").decode()
+    return read_package_file(_package(build_id), "report.md").decode()
 
 
-@app.get("/api/builds/{build_id}/files/{name}", response_class=PlainTextResponse)
-def build_file(build_id: str, name: str) -> str:
-    row = _build(build_id)
-    allowed = {"tinyml_model.h": "include/tinyml_model.h", "tinyml_model.c": "src/tinyml_model.c",
-               "TinyMLModel.hpp": "cpp/TinyMLModel.hpp", "main.c": "example/main.c"}
-    if name not in allowed or not row["package_path"]:
-        raise HTTPException(404, "file not available")
-    with zipfile.ZipFile(row["package_path"]) as zf:
-        return zf.read(f"tinyml/{allowed[name]}").decode()
+@app.get("/api/builds/{build_id}/files")
+def build_files(build_id: str) -> list[dict[str, Any]]:
+    return package_files(_package(build_id))
 
 
+TEXT_SUFFIXES = (".c", ".h", ".hpp", ".md", ".json", ".py", ".pem", ".txt")
+
+
+@app.get("/api/builds/{build_id}/files/{name:path}")
+def build_file(build_id: str, name: str, download: bool = False) -> Response:
+    pkg = _package(build_id)
+    try:
+        data = read_package_file(pkg, name)
+    except KeyError as exc:
+        raise HTTPException(404, "file not in this package") from exc
+    if download:
+        return Response(data, media_type="application/octet-stream",
+                        headers={"Content-Disposition": f'attachment; filename="{Path(name).name}"'})
+    if not name.endswith(TEXT_SUFFIXES):
+        return PlainTextResponse(f"{Path(name).name} is a binary file ({len(data)} bytes).")
+    return PlainTextResponse(data.decode(errors="replace"))
+
+
+# ---------------------------------------------------------------------------------------- assistant
 class AskBody(BaseModel):
     question: str
     build_id: str | None = None
+    stage: str | None = None
+
+
+def _context(project_id: str) -> str:
+    """What the assistant may see: the requirements and the review cards. Never raw sensor data."""
+    store = _store()
+    project = _project(project_id)
+    lines = [f"Goal: {project['description']}", f"Requirements: {json.dumps(project['spec'])}"]
+    if project.get("chip_ids"):
+        lines.append(f"Chip shortlist: {', '.join(project['chip_ids'])}")
+    for card in review.cards(store, project_id):
+        lines.append(f"\n## {card['title']} (review: {card['status']})\n{card['headline']}")
+        lines += [f"- {f['label']}: {f['value']}" + (f" [{f['tag']}]" if f.get("tag") else "") for f in card["facts"]]
+        lines += [f"- check ({c['level']}): {c['text']}" for c in card["checks"]]
+    candidates = store.candidates(project_id)
+    if candidates:
+        lines.append("\n## Models tried")
+        for c in candidates:
+            d = c.get("details") or {}
+            lines.append(f"- {d.get('title', c['algorithm'])} ({d.get('setting', c['note'])}): "
+                         f"{'meets' if c['passed'] else 'below'} target. {d.get('why', '')}")
+    return "\n".join(lines)
 
 
 @app.post("/api/projects/{project_id}/ask")
 def ask(project_id: str, body: AskBody) -> dict[str, Any]:
-    """Questions about a package go to Claude Code (reading the unpacked package) or become a prompt for Claude chat."""
+    """Questions about the project or a package. Claude Code answers locally; Claude chat gets a prompt to paste."""
     store = _store()
     _project(project_id)
+    if not body.question.strip():
+        raise HTTPException(400, "Type a question first")
+    settings = load_settings()
     builds = [b for b in store.builds(project_id) if b["package_path"]]
     if body.build_id:
         builds = [b for b in builds if b["id"] == body.build_id]
-    if not builds:
-        raise HTTPException(400, "Build a package first")
-    pkg = Path(builds[0]["package_path"])
-    with zipfile.ZipFile(pkg) as zf:
-        report_text = zf.read("tinyml/report.md").decode()
-        header = zf.read("tinyml/include/tinyml_model.h").decode()
-    settings = load_settings()
+    pkg = Path(builds[0]["package_path"]) if builds and (body.build_id or body.stage == "build") else None
     prompt = (
-        "You are helping a firmware engineer use a generated TinyML C library. Answer briefly and concretely.\n\n"
-        f"Question: {body.question}\n\n--- report.md ---\n{report_text}\n\n--- tinyml_model.h ---\n{header}\n"
+        "You are the review assistant in a TinyML tool. A person is checking each step before continuing. "
+        "Answer briefly and concretely in plain English; point out anything they should check. "
+        "Only summaries are shown below, never raw sensor data.\n\n"
+        f"Current step: {body.stage or 'unknown'}\nQuestion: {body.question}\n\n--- project ---\n{_context(project_id)}\n"
     )
-    if settings.assistant.provider == "claude_code":
-        unpack = project_dir(project_id, "work", "ask", pkg.stem)
+    if pkg is not None:
         with zipfile.ZipFile(pkg) as zf:
-            zf.extractall(unpack)
+            prompt += (f"\n--- report.md ---\n{zf.read('tinyml/report.md').decode()}\n"
+                       f"\n--- tinyml_model.h ---\n{zf.read('tinyml/include/tinyml_model.h').decode()}\n")
+    provider = settings.assistant.provider
+    if provider == "claude_code":
         try:
-            answer = ClaudeCodeProvider(settings.assistant).run(
-                f"{body.question}\n\nThe package is in ./tinyml (start with report.md). Answer briefly.",
-                cwd=str(unpack), tools="Read,Grep,Glob")
+            if pkg is not None:
+                unpack = project_dir(project_id, "work", "ask", pkg.stem)
+                with zipfile.ZipFile(pkg) as zf:
+                    zf.extractall(unpack)
+                answer = ClaudeCodeProvider(settings.assistant).run(
+                    f"{prompt}\nThe full package is in ./tinyml (start with report.md).", cwd=str(unpack),
+                    tools="Read,Grep,Glob")
+            else:
+                answer = ClaudeCodeProvider(settings.assistant).run(prompt)
             return {"answer": answer, "source": "claude_code"}
         except ProviderUnavailable as exc:
             return {"answer": None, "source": "unavailable", "error": str(exc), "prompt": prompt}
-    return {"answer": None, "source": "claude_chat", "prompt": prompt}
+    if provider == "claude_chat":
+        return {"answer": None, "source": "claude_chat", "prompt": prompt}
+    return {"answer": None, "source": "off", "prompt": prompt,
+            "message": "The assistant is off, so nothing was sent anywhere. Turn on Claude Code in Settings for "
+                       "answers on this computer, or copy the prompt into Claude chat yourself."}
 
 
 # ---------------------------------------------------------------------------------------- decisions
@@ -383,4 +560,10 @@ def learned_rules() -> list[dict[str, Any]]:
     return _store().learned_rules()
 
 
-app.mount("/", StaticFiles(directory=str(ui_dir()), html=True), name="ui")
+if (ui_dir() / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(ui_dir()), html=True), name="ui")
+else:
+    @app.get("/", response_class=PlainTextResponse)
+    def ui_missing() -> str:
+        return ("The web app has not been built yet. Run `npm --prefix ui ci && npm --prefix ui run build`, then "
+                "restart `tinyml serve`. The API is available under /api.")

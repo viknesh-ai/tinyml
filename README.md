@@ -11,7 +11,7 @@
 "Alert me when my pump vibration looks abnormal. Battery, Wi-Fi."  +  pump.csv
         │
         ▼
- checks the data ─► rules → classic ML → tiny 8-bit network (stops at the simplest that works)
+ checks the data ─► rules → classic ML (settings tuned by cross-validation; stops at the simplest that works)
         │
         ▼
  C99 library ─► compiled with each chip's own compiler ─► run in an emulator ─► parity with Python
@@ -39,7 +39,8 @@
 ## Why tinyml
 
 - **Verified, not hoped.** No package ships unless golden-vector parity between Python and the compiled C passes inside an emulator of the target chip.
-- **Simplest model that works.** An algorithm ladder tries rules first, then classic ML, then a small int8 network, and stops at the first rung that meets the goal.
+- **Simplest model that works.** An algorithm ladder tries rules first, then classic ML (random forest, XGBoost, isolation forest), and recommends the simplest method that meets the goal. Settings are chosen by cross-validation on the training recordings; the test recordings are used once, for the final score.
+- **A person stays in the loop.** After every step a review card (written by code, not AI) appears in the assistant panel. Running jobs can be paused, resumed or cancelled, and optional review gates make each step wait for your approval.
 - **Honest numbers.** Every flash, RAM, latency and energy figure comes from a compiler, linker, emulator or catalog, and is tagged `measured`, `emulated` or `estimated`.
 - **Private by design.** No cloud services. Raw sensor data never leaves your machine; the optional assistant only ever sees column summaries.
 
@@ -95,7 +96,15 @@ uv run tinyml serve                # opens http://127.0.0.1:8765
 uv run tinyml serve --no-open --port 9000
 ```
 
-In the web app, click **New project**, pick one of the example sentences, then on the Data step press **pump**, **driving** or **activity** to load demo data. Then train, rank and build.
+The app opens on your workspaces. Create one with **New workspace** and an objective in your own words, then work down the six numbered steps in the sidebar: Brief, Targets, Data (upload your CSV recordings), Training (with Pipeline design under it), Benchmark and Deployment. Each step ends with Back and its main action. The Dashboard sums up the project, Runs keeps every run with its full log, and ⌘K searches pages and runs stages. Runs stream into the console at the bottom, where you can pause or stop them, and each stage's review card waits in the assistant panel on the right. Nothing is preloaded; to try it without your own recordings, write a demo CSV first with `uv run tinyml demo-data driving --out demo` and upload it on the Data page.
+
+The built web app is checked in under `ui/dist/`, so running it needs no Node.js. To change the interface, see [`ui/CLAUDE.md`](ui/CLAUDE.md):
+
+```sh
+npm --prefix ui ci          # once
+npm --prefix ui run dev     # live reload on http://127.0.0.1:5173, API calls go to tinyml serve
+make ui                     # typecheck and rebuild ui/dist before committing
+```
 
 ## Command line
 
@@ -128,27 +137,38 @@ Run `uv run tinyml <command> --help` for the options of each command.
 
 ## What you get
 
-The web app has six steps:
+The screen is split in two: the steps on the left, the **assistant panel** on the right.
 
-1. **Describe** – a sentence becomes a problem spec, with one follow-up question if something important is missing.
-2. **Vendor** – a vendor or "any", plus connectivity, power, budget and priority, pre-filled from the sentence.
+1. **Goal** – a sentence becomes a problem spec, with one follow-up question if something important is missing.
+2. **Chips** – pick a chip maker (or any), then optionally the exact chips you can use, plus connectivity, power, budget and priority. A live summary shows how many chips will be tested and why others are left out.
 3. **Data** – column roles you can correct, plain-English data checks (missing values, gaps, clipping, uneven or mixed sampling rates, not enough data) and a look at the signal.
-4. **Algorithm** – the ladder with every candidate tried, the chosen one explained in one sentence, and how well it separates the classes.
-5. **Rank chips** – a real build and emulator run per chip, the top three with reasons and trade-offs, and why the others were left out.
-6. **Build** – the final build, parity per golden window, the report, the code, a download, and "ask about this package".
+4. **Model** – the recommended method explained in plain words (for rules, the actual if-then rules), its test results against the target, why it was chosen, every other option with why it was not, and how it was tested (the split, the cross-validation and every setting tried).
+5. **Compare** – a real build and emulator run per chip, the top three with reasons and trade-offs, and why the others were left out. Skipped when you chose exactly one chip.
+6. **Build** – the final build for the chip you picked (no second chip picker), parity per golden window, and two downloads.
 
-The downloadable package is a signed `.zip` containing the C99 library, a C++ wrapper, an example, calibration data, a standalone parity test and a report.
+The assistant panel shows the running job with **Pause**, **Resume** and **Cancel** (they take effect after the current compile or emulator run), a **review card** for every finished step with Approve / Request changes, open questions, and a place to ask questions. Review gates (on by default, see Settings) make training wait for an approved data review, and comparing chips or building wait for an approved model.
+
+Two downloads:
+
+- **Essentials** – just `tinyml_model.h` and `tinyml_model.c`, byte-identical to the files in the signed package. That is all a firmware project needs.
+- **Full package** – the signed `.zip` with the library, a C++ wrapper, an example, calibration data, a standalone parity test and a report. The page lists every file with what it is for, and you can open any of them.
 
 ## Supported chips
 
-| chip | how it is built and run | numbers |
-|---|---|---|
-| ESP32-S3, ESP32-C3 | ESP-IDF v5.5.6, Espressif QEMU (chip-level) | measured flash and RAM, emulated instructions |
-| STM32F411, STM32L432, nRF52840 | Arm GCC, QEMU MPS2 Cortex-M4F (core-level) | measured flash and RAM, emulated instructions |
-| nRF54L15 | Arm GCC, QEMU MPS2 Cortex-M33 (core-level) | measured flash and RAM, emulated instructions |
-| RP2040, RP2350 | Arm GCC, community-level emulation | estimated until onboarded |
+36 chips from 9 makers: Espressif, STMicroelectronics, Nordic, Raspberry Pi, NXP, Microchip, Silicon Labs, Texas Instruments and Renesas (`tinyml catalog` lists them).
 
-The chip catalog lives in `catalog/chips.yaml` and is hand-edited for V1.
+| core | chips | how it is built and run | numbers |
+|---|---|---|---|
+| Xtensa LX7 / LX6 | ESP32-S3, ESP32 | ESP-IDF v5.5.6, Espressif QEMU (chip-level) | measured flash and RAM, emulated instructions |
+| RISC-V RV32IMC | ESP32-C3 (ESP-IDF, or bare metal), ESP32-C6, ESP32-H2 | RISC-V GCC, QEMU `virt` (core-level) | measured flash and RAM, emulated instructions |
+| Cortex-M0+ | STM32C0, STM32G0, SAM D21, CC2340, RP2040 | Arm GCC, QEMU MPS2 AN385 | measured; RP2040 estimated until onboarded |
+| Cortex-M4 (with or without FPU) | STM32F4, STM32G4, STM32L4, STM32WB, nRF52, SAM D51, CC2652R, RA4M1 | Arm GCC, QEMU MPS2 AN386 | measured flash and RAM, emulated instructions |
+| Cortex-M33 | STM32U5, STM32WBA, nRF53, nRF54L, LPC55S69, MCX N947, EFR32BG22/MG24, RP2350 | Arm GCC, QEMU MPS2 AN505 | measured; RP2350 estimated until onboarded |
+| Cortex-M7 | STM32H743, i.MX RT1062 | Arm GCC, QEMU MPS2 AN500 | measured flash and RAM, emulated instructions |
+
+Chips with the same core and compiler flags compile to the same binary, so one build and emulator run serves all of them; each chip's time, energy and battery numbers are then worked out from its own clock, speed factor and currents.
+
+The chip catalog lives in `catalog/chips.yaml` and is hand-edited from datasheets for now; `get_catalog()` in `src/tinyml/catalog.py` is the only loader, so a chip catalog API can replace the file later.
 
 ## How every number is sourced
 
@@ -179,7 +199,7 @@ recipes/          per-use-case defaults (pump health, driving events, human acti
 catalog/          chip catalog
 src/tinyml/       engine: data, features, ml, codegen, toolchains, ranking, packaging, decide, pipeline, api, cli
 firmware/         parity harness, size probe, ports for Arm, RISC-V, host and ESP-IDF
-ui/               the web app (plain HTML, CSS and JS, works offline)
+ui/               the web app: React and TypeScript source in ui/src, the built copy in ui/dist (works offline)
 tests/            unit tests and per-chip emulator parity tests
 scripts/          setup scripts for macOS, Linux and ESP-IDF
 ci/               pinned Docker image
@@ -194,9 +214,10 @@ uv sync          # install
 make test        # lint + unit tests (fast, host only)
 make parity      # build and emulate every chip whose toolchain is installed
 make demo        # write the three synthetic demo CSVs
+make ui          # typecheck and rebuild the web app into ui/dist
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, unit tests and emulator parity tests on every pull request; all must pass to merge.
+CI (`.github/workflows/ci.yml`) runs lint, unit tests, the web app typecheck and build (and checks that `ui/dist` matches the source), and emulator parity tests on every pull request; all must pass to merge.
 
 Before contributing, read [`AGENTS.md`](AGENTS.md) for the project rules and folder ownership, and [`docs/contracts/`](docs/contracts/) for the data formats. Changes to the contracts need the lead's approval and must update the Python and C sides together.
 
