@@ -1,22 +1,50 @@
-# Hand-edited V1 chip catalog (PRD section 8).
-# Prices are rough 1k-unit chip prices and power figures are rounded datasheet typicals.
-# Both are always shown to users as "estimated". Memory sizes and cores are from datasheets.
+# Hand-edited chip catalog (PRD section 8), until the chip catalog API replaces this file.
+# Memory sizes, cores, clocks and radios are datasheet values. Prices are rough 1k-unit chip prices and
+# currents are rounded datasheet typicals (active: CPU running from flash at full clock, radio off;
+# sleep: the lowest mode that keeps RAM and a timer running). Both are always shown as "estimated".
+
+catalog:
+  version: "2026.10"
+  source: Hand-collected from vendor datasheets and product pages, October 2026
 
 vendors:
   - id: espressif
     name: Espressif
+    summary: Wi-Fi and Bluetooth chips with lots of RAM; the usual choice for connected products.
   - id: st
     name: STMicroelectronics
+    summary: The widest STM32 range, from 40-cent Cortex-M0+ parts to 480 MHz Cortex-M7.
   - id: nordic
     name: Nordic Semiconductor
+    summary: Bluetooth LE specialists with very low run and sleep current.
   - id: raspberrypi
     name: Raspberry Pi
+    summary: Cheap, fast dual-core chips with external flash.
+  - id: nxp
+    name: NXP
+    summary: High-performance Cortex-M33 and crossover Cortex-M7 parts.
+  - id: microchip
+    name: Microchip
+    summary: SAM D Cortex-M0+ and M4F chips, common on Arduino and Adafruit boards.
+  - id: silabs
+    name: Silicon Labs
+    summary: Low-power Bluetooth LE, Thread and Zigbee radios.
+  - id: ti
+    name: Texas Instruments
+    summary: SimpleLink wireless chips for Bluetooth LE, Thread and Zigbee.
+  - id: renesas
+    name: Renesas
+    summary: RA family Cortex-M4F, used on the Arduino Uno R4.
 
 cores:
   xtensa-lx7f:
     arch: xtensa
     fpu: single
     description: Xtensa LX7 with single-precision FPU
+  xtensa-lx6f:
+    arch: xtensa
+    fpu: single
+    description: Xtensa LX6 with single-precision FPU
   rv32imc:
     arch: riscv
     fpu: none
@@ -27,12 +55,24 @@ cores:
     gcc_flags: [-mcpu=cortex-m4, -mthumb, -mfpu=fpv4-sp-d16, -mfloat-abi=hard]
     qemu_machine: mps2-an386
     description: Arm Cortex-M4 with single-precision FPU
+  cortex-m4:
+    arch: arm
+    fpu: none
+    gcc_flags: [-mcpu=cortex-m4, -mthumb, -mfloat-abi=soft]
+    qemu_machine: mps2-an386
+    description: Arm Cortex-M4 without FPU
   cortex-m33f:
     arch: arm
     fpu: single
     gcc_flags: [-mcpu=cortex-m33, -mthumb, -mfpu=fpv5-sp-d16, -mfloat-abi=hard]
     qemu_machine: mps2-an505
     description: Arm Cortex-M33 with single-precision FPU
+  cortex-m7f:
+    arch: arm
+    fpu: double
+    gcc_flags: [-mcpu=cortex-m7, -mthumb, -mfpu=fpv5-d16, -mfloat-abi=hard]
+    qemu_machine: mps2-an500
+    description: Arm Cortex-M7 with double-precision FPU
   cortex-m0plus:
     arch: arm
     fpu: none
@@ -47,6 +87,7 @@ cores:
     description: RISC-V RV32IMC core on the QEMU virt board
 
 chips:
+  # ---------------------------------------------------------------- Espressif
   - id: esp32s3
     vendor: espressif
     family: ESP32-S3
@@ -68,6 +109,28 @@ chips:
     toolchain_image: espressif/idf:v5.5.6
     onboarding: emulated
     notes: Wi-Fi and Bluetooth LE built in; vector instructions for DSP.
+
+  - id: esp32
+    vendor: espressif
+    family: ESP32
+    part_number: ESP32-D0WD-V3
+    core: xtensa-lx6f
+    clock_mhz: 240
+    ram_kb: 520
+    flash_kb: 4096
+    radios: [wifi, ble]
+    active_ma: 50.0
+    sleep_ma: 0.8
+    price_usd: 2.00
+    lifecycle: active
+    backend: espidf
+    idf_target: esp32
+    fallback_backend: null
+    emulator: {name: Espressif QEMU, machine: esp32, fidelity: chip}
+    cpi: {value: 1.3, source: estimated}
+    toolchain_image: espressif/idf:v5.5.6
+    onboarding: emulated
+    notes: The original dual-core ESP32 with Wi-Fi and Bluetooth; flash is an external 4 MB chip.
 
   - id: esp32c3
     vendor: espressif
@@ -92,6 +155,107 @@ chips:
     onboarding: emulated
     notes: Cheapest Wi-Fi option, but no FPU so float maths is done in software.
 
+  - id: esp32c6
+    vendor: espressif
+    family: ESP32-C6
+    part_number: ESP32-C6FH4
+    core: rv32imc-generic
+    clock_mhz: 160
+    ram_kb: 512
+    flash_kb: 4096
+    radios: [wifi, ble, thread, zigbee]
+    active_ma: 25.0
+    sleep_ma: 0.18
+    price_usd: 1.30
+    lifecycle: active
+    backend: riscv
+    emulator: {name: QEMU, machine: virt, fidelity: core}
+    cpi: {value: 1.35, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Wi-Fi 6, Bluetooth LE, Thread and Zigbee on one RISC-V chip; no FPU. Tested as RV32IMC code on a generic RISC-V core.
+
+  - id: esp32h2
+    vendor: espressif
+    family: ESP32-H2
+    part_number: ESP32-H2FH4
+    core: rv32imc-generic
+    clock_mhz: 96
+    ram_kb: 320
+    flash_kb: 4096
+    radios: [ble, thread, zigbee]
+    active_ma: 14.0
+    sleep_ma: 0.1
+    price_usd: 1.20
+    lifecycle: active
+    backend: riscv
+    emulator: {name: QEMU, machine: virt, fidelity: core}
+    cpi: {value: 1.35, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Bluetooth LE, Thread and Zigbee without Wi-Fi; no FPU. Tested as RV32IMC code on a generic RISC-V core.
+
+  # ---------------------------------------------------------------- STMicroelectronics
+  - id: stm32c031
+    vendor: st
+    family: STM32C0
+    part_number: STM32C031K6U6
+    core: cortex-m0plus
+    clock_mhz: 48
+    ram_kb: 12
+    flash_kb: 32
+    radios: []
+    active_ma: 3.8
+    sleep_ma: 0.08
+    price_usd: 0.40
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an385, fidelity: core}
+    cpi: {value: 1.5, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: The cheapest STM32. Very little memory and no FPU, so only the smallest models fit.
+
+  - id: stm32g071
+    vendor: st
+    family: STM32G0
+    part_number: STM32G071KBU6
+    core: cortex-m0plus
+    clock_mhz: 64
+    ram_kb: 36
+    flash_kb: 128
+    radios: []
+    active_ma: 6.0
+    sleep_ma: 0.005
+    price_usd: 1.20
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an385, fidelity: core}
+    cpi: {value: 1.5, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Low-cost Cortex-M0+ with a good stop mode; no FPU.
+
+  - id: stm32f401
+    vendor: st
+    family: STM32F4
+    part_number: STM32F401CCU6
+    core: cortex-m4f
+    clock_mhz: 84
+    ram_kb: 64
+    flash_kb: 256
+    radios: []
+    active_ma: 12.0
+    sleep_ma: 0.012
+    price_usd: 2.40
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Entry Cortex-M4F, found on cheap "Black Pill" boards.
+
   - id: stm32f411
     vendor: st
     family: STM32F4
@@ -111,6 +275,26 @@ chips:
     toolchain_image: tinyml/toolchains:2026.10
     onboarding: emulated
     notes: General-purpose Cortex-M4F, widely available on "Black Pill" boards.
+
+  - id: stm32g431
+    vendor: st
+    family: STM32G4
+    part_number: STM32G431CBU6
+    core: cortex-m4f
+    clock_mhz: 170
+    ram_kb: 32
+    flash_kb: 128
+    radios: []
+    active_ma: 28.0
+    sleep_ma: 0.1
+    price_usd: 2.60
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Fast 170 MHz Cortex-M4F with maths accelerators, aimed at motor control.
 
   - id: stm32l432
     vendor: st
@@ -132,6 +316,167 @@ chips:
     onboarding: emulated
     notes: Ultra-low-power Cortex-M4F with very low stop-mode current.
 
+  - id: stm32l476
+    vendor: st
+    family: STM32L4
+    part_number: STM32L476RGT6
+    core: cortex-m4f
+    clock_mhz: 80
+    ram_kb: 128
+    flash_kb: 1024
+    radios: []
+    active_ma: 8.0
+    sleep_ma: 0.0012
+    price_usd: 5.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Low-power Cortex-M4F with plenty of flash; the Nucleo-L476RG board is common.
+
+  - id: stm32wb55
+    vendor: st
+    family: STM32WB
+    part_number: STM32WB55CGU6
+    core: cortex-m4f
+    clock_mhz: 64
+    ram_kb: 256
+    flash_kb: 1024
+    radios: [ble, thread, zigbee]
+    active_ma: 3.4
+    sleep_ma: 0.002
+    price_usd: 4.20
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Cortex-M4F with a second core for Bluetooth LE, Thread and Zigbee. The radio stack takes part of the flash and RAM.
+
+  - id: stm32wba52
+    vendor: st
+    family: STM32WBA
+    part_number: STM32WBA52CGU6
+    core: cortex-m33f
+    clock_mhz: 100
+    ram_kb: 128
+    flash_kb: 1024
+    radios: [ble]
+    active_ma: 3.3
+    sleep_ma: 0.002
+    price_usd: 3.20
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Single-core Bluetooth LE chip with a Cortex-M33; the radio stack shares the flash and RAM.
+
+  - id: stm32u585
+    vendor: st
+    family: STM32U5
+    part_number: STM32U585CIU6
+    core: cortex-m33f
+    clock_mhz: 160
+    ram_kb: 786
+    flash_kb: 2048
+    radios: []
+    active_ma: 3.1
+    sleep_ma: 0.003
+    price_usd: 6.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Ultra-low-power Cortex-M33 with a lot of RAM and flash; very low current per MHz.
+
+  - id: stm32h743
+    vendor: st
+    family: STM32H7
+    part_number: STM32H743VIT6
+    core: cortex-m7f
+    clock_mhz: 480
+    ram_kb: 1024
+    flash_kb: 2048
+    radios: []
+    active_ma: 100.0
+    sleep_ma: 0.5
+    price_usd: 9.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an500, fidelity: core}
+    cpi: {value: 1.0, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: 480 MHz Cortex-M7, the fastest STM32 here; draws a lot of current when awake.
+
+  # ---------------------------------------------------------------- Nordic Semiconductor
+  - id: nrf52810
+    vendor: nordic
+    family: nRF52
+    part_number: nRF52810-QCAA
+    core: cortex-m4
+    clock_mhz: 64
+    ram_kb: 24
+    flash_kb: 192
+    radios: [ble]
+    active_ma: 2.3
+    sleep_ma: 0.002
+    price_usd: 1.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Lowest-cost nRF52 for Bluetooth LE; no FPU and little RAM.
+
+  - id: nrf52832
+    vendor: nordic
+    family: nRF52
+    part_number: nRF52832-QFAA
+    core: cortex-m4f
+    clock_mhz: 64
+    ram_kb: 64
+    flash_kb: 512
+    radios: [ble]
+    active_ma: 3.7
+    sleep_ma: 0.002
+    price_usd: 2.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: The classic Bluetooth LE chip with a Cortex-M4F.
+
+  - id: nrf52833
+    vendor: nordic
+    family: nRF52
+    part_number: nRF52833-QIAA
+    core: cortex-m4f
+    clock_mhz: 64
+    ram_kb: 128
+    flash_kb: 512
+    radios: [ble, thread, zigbee]
+    active_ma: 3.3
+    sleep_ma: 0.003
+    price_usd: 2.90
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Bluetooth LE, Thread and Zigbee with 128 KB RAM; used on the micro:bit v2.
+
   - id: nrf52840
     vendor: nordic
     family: nRF52
@@ -151,6 +496,66 @@ chips:
     toolchain_image: tinyml/toolchains:2026.10
     onboarding: emulated
     notes: Bluetooth LE built in, very low run current.
+
+  - id: nrf5340
+    vendor: nordic
+    family: nRF53
+    part_number: nRF5340-QKAA
+    core: cortex-m33f
+    clock_mhz: 128
+    ram_kb: 512
+    flash_kb: 1024
+    radios: [ble, thread, zigbee]
+    active_ma: 6.0
+    sleep_ma: 0.003
+    price_usd: 4.40
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Dual-core; the model runs on the 128 MHz application core while a second core handles the radio.
+
+  - id: nrf54l05
+    vendor: nordic
+    family: nRF54L
+    part_number: nRF54L05-QFAA
+    core: cortex-m33f
+    clock_mhz: 128
+    ram_kb: 96
+    flash_kb: 500
+    radios: [ble, thread, zigbee]
+    active_ma: 3.0
+    sleep_ma: 0.003
+    price_usd: 1.90
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Smallest nRF54L; same fast, low-power core as the nRF54L15 with less memory.
+
+  - id: nrf54l10
+    vendor: nordic
+    family: nRF54L
+    part_number: nRF54L10-QFAA
+    core: cortex-m33f
+    clock_mhz: 128
+    ram_kb: 192
+    flash_kb: 1012
+    radios: [ble, thread, zigbee]
+    active_ma: 3.0
+    sleep_ma: 0.003
+    price_usd: 2.40
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Mid-size nRF54L with 192 KB RAM.
 
   - id: nrf54l15
     vendor: nordic
@@ -172,6 +577,7 @@ chips:
     onboarding: emulated
     notes: Newer Bluetooth LE chip, faster core and lower power than nRF52.
 
+  # ---------------------------------------------------------------- Raspberry Pi
   - id: rp2040
     vendor: raspberrypi
     family: RP2040
@@ -211,3 +617,208 @@ chips:
     toolchain_image: tinyml/toolchains:2026.10
     onboarding: estimated
     notes: Price includes an external 2 MB flash chip. Cortex-M33 cores with FPU.
+
+  # ---------------------------------------------------------------- NXP
+  - id: lpc55s69
+    vendor: nxp
+    family: LPC55S6x
+    part_number: LPC55S69JBD100
+    core: cortex-m33f
+    clock_mhz: 150
+    ram_kb: 320
+    flash_kb: 640
+    radios: []
+    active_ma: 4.7
+    sleep_ma: 0.015
+    price_usd: 5.00
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Dual Cortex-M33 with security features; the model runs on the main core.
+
+  - id: mcxn947
+    vendor: nxp
+    family: MCX N94x
+    part_number: MCXN947VDF
+    core: cortex-m33f
+    clock_mhz: 150
+    ram_kb: 512
+    flash_kb: 2048
+    radios: []
+    active_ma: 8.5
+    sleep_ma: 0.02
+    price_usd: 7.00
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Dual Cortex-M33 with lots of memory. Its neural accelerator is not used by these models.
+
+  - id: imxrt1062
+    vendor: nxp
+    family: i.MX RT1060
+    part_number: MIMXRT1062DVL6B
+    core: cortex-m7f
+    clock_mhz: 600
+    ram_kb: 1024
+    flash_kb: 8192
+    radios: []
+    active_ma: 110.0
+    sleep_ma: 1.0
+    price_usd: 6.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an500, fidelity: core}
+    cpi: {value: 1.0, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: 600 MHz Cortex-M7 (Teensy 4.x). No internal flash; boards add an external 8 MB chip.
+
+  # ---------------------------------------------------------------- Microchip
+  - id: samd21
+    vendor: microchip
+    family: SAM D21
+    part_number: ATSAMD21G18A
+    core: cortex-m0plus
+    clock_mhz: 48
+    ram_kb: 32
+    flash_kb: 256
+    radios: []
+    active_ma: 4.5
+    sleep_ma: 0.004
+    price_usd: 2.80
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an385, fidelity: core}
+    cpi: {value: 1.5, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Cortex-M0+ on many Arduino Zero and Adafruit boards; no FPU.
+
+  - id: samd51
+    vendor: microchip
+    family: SAM D51
+    part_number: ATSAMD51J19A
+    core: cortex-m4f
+    clock_mhz: 120
+    ram_kb: 192
+    flash_kb: 512
+    radios: []
+    active_ma: 8.0
+    sleep_ma: 0.01
+    price_usd: 4.50
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: 120 MHz Cortex-M4F used on Adafruit "M4" boards.
+
+  # ---------------------------------------------------------------- Silicon Labs
+  - id: efr32bg22
+    vendor: silabs
+    family: EFR32BG22
+    part_number: EFR32BG22C224F512IM40
+    core: cortex-m33f
+    clock_mhz: 76.8
+    ram_kb: 32
+    flash_kb: 512
+    radios: [ble]
+    active_ma: 2.1
+    sleep_ma: 0.0014
+    price_usd: 1.90
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Very low-power Bluetooth LE chip for coin-cell products; only 32 KB RAM.
+
+  - id: efr32mg24
+    vendor: silabs
+    family: EFR32MG24
+    part_number: EFR32MG24B210F1536IM48
+    core: cortex-m33f
+    clock_mhz: 78
+    ram_kb: 256
+    flash_kb: 1536
+    radios: [ble, thread, zigbee]
+    active_ma: 2.6
+    sleep_ma: 0.0013
+    price_usd: 3.80
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an505, fidelity: core}
+    cpi: {value: 1.2, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Multi-protocol radio (Bluetooth LE, Thread, Zigbee, Matter) with plenty of memory.
+
+  # ---------------------------------------------------------------- Texas Instruments
+  - id: cc2340r5
+    vendor: ti
+    family: CC2340
+    part_number: CC2340R5RKP
+    core: cortex-m0plus
+    clock_mhz: 48
+    ram_kb: 36
+    flash_kb: 512
+    radios: [ble, zigbee]
+    active_ma: 2.6
+    sleep_ma: 0.0007
+    price_usd: 0.80
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an385, fidelity: core}
+    cpi: {value: 1.5, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Low-cost Bluetooth LE chip with a Cortex-M0+; no FPU.
+
+  - id: cc2652r
+    vendor: ti
+    family: CC2652R
+    part_number: CC2652R1FRGZ
+    core: cortex-m4f
+    clock_mhz: 48
+    ram_kb: 80
+    flash_kb: 352
+    radios: [ble, thread, zigbee]
+    active_ma: 3.4
+    sleep_ma: 0.001
+    price_usd: 3.60
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: Multi-protocol Cortex-M4F radio chip, popular for Zigbee devices.
+
+  # ---------------------------------------------------------------- Renesas
+  - id: ra4m1
+    vendor: renesas
+    family: RA4M1
+    part_number: R7FA4M1AB3CFM
+    core: cortex-m4f
+    clock_mhz: 48
+    ram_kb: 32
+    flash_kb: 256
+    radios: []
+    active_ma: 6.5
+    sleep_ma: 0.0012
+    price_usd: 3.00
+    lifecycle: active
+    backend: arm
+    emulator: {name: QEMU, machine: mps2-an386, fidelity: core}
+    cpi: {value: 1.25, source: estimated}
+    toolchain_image: tinyml/toolchains:2026.10
+    onboarding: emulated
+    notes: 48 MHz Cortex-M4F, the chip on the Arduino Uno R4.

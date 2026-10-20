@@ -1,4 +1,4 @@
-.PHONY: setup test parity serve demo doctor clean
+.PHONY: setup test parity serve demo doctor ui clean
 
 setup:
 	uv sync
@@ -12,6 +12,10 @@ parity:
 
 serve:
 	uv run tinyml serve
+
+ui:
+	npm --prefix ui ci
+	npm --prefix ui run build
 
 doctor:
 	uv run tinyml doctor

@@ -12,7 +12,7 @@ Until Jev is wired in, the assistant is Claude, used through tools the team alre
 - **Claude Code** (`claude_code`): tinyml runs `claude -p "<prompt>" --output-format json` on your machine with your own login. The prompt contains only the column summary and the options, never raw rows. Claude answers with JSON (choice, confidence, an optional follow-up question). If its confidence is below the cut-off, you are asked. The Claude Code version is logged with every decision.
 - **Claude chat** (`claude_chat`): tinyml shows the same prompt for you to paste into Claude chat. You paste the JSON answer back, or simply pick an option.
 
-The same setting powers "Ask about this package" on the Build screen. With Claude Code, it unpacks the package and lets Claude read it (read-only tools); with Claude chat, you get a ready prompt that includes the report and header.
+The same setting powers the **Ask** box in the assistant panel. Questions go with a summary of the project (the requirements and the review cards, never raw data); with a built package, Claude Code can also read the unpacked package. With Claude Code, it unpacks the package and lets Claude read it (read-only tools); with Claude chat, you get a ready prompt that includes the report and header.
 
 ## The decision log
 

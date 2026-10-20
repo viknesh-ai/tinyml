@@ -6,6 +6,12 @@ __pycache__/
 workspace/
 *.egg-info/
 dist/
+!ui/dist/
+node_modules/
+*.tsbuildinfo
 build/
 .DS_Store
 samples/*.csv
+
+# antislop agent skills: installed locally, never committed
+.claude/skills/antislop*/

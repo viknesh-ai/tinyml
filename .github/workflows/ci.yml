@@ -15,6 +15,20 @@ jobs:
       - run: uv run ruff check src tests
       - run: uv run pytest tests/unit -q
 
+  ui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm --prefix ui ci
+      - run: npm --prefix ui run build
+      - name: ui/dist matches the source
+        run: git diff --exit-code --stat -- ui/dist || (echo "Run 'make ui' and commit ui/dist" && exit 1)
+
   parity-arm-riscv:
     runs-on: ubuntu-24.04
     needs: unit

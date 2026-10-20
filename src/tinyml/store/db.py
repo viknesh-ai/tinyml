@@ -19,8 +19,10 @@ SCHEMA = Path(__file__).with_name("schema.sql")
 JSON_COLUMNS = {
     "spec", "files", "summary", "roles", "label_map", "issues", "stats", "metrics",
     "measurement", "reasons", "tradeoffs", "parity", "reproducibility", "options",
-    "params", "result", "output",
+    "params", "result", "output", "chip_ids", "details",
 }
+# Columns added after the first release; existing databases get them on open.
+MIGRATIONS = {"projects": {"chip_ids": "TEXT"}, "candidates": {"details": "TEXT"}}
 
 
 def now() -> str:
@@ -60,6 +62,14 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA.read_text())
+        self._migrate()
+
+    def _migrate(self) -> None:
+        for table, columns in MIGRATIONS.items():
+            existing = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for column, sql_type in columns.items():
+                if column not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
     def close(self) -> None:
         self._conn.close()
@@ -225,6 +235,12 @@ class Store:
     def jobs(self, project_id: str) -> list[dict[str, Any]]:
         return self.all("SELECT * FROM jobs WHERE project_id = ? ORDER BY created_at DESC", (project_id,))
 
+    def active_job(self, project_id: str) -> dict[str, Any] | None:
+        return self.one(
+            "SELECT * FROM jobs WHERE project_id = ? AND status IN ('queued', 'running', 'pausing', 'paused', "
+            "'cancelling') ORDER BY created_at DESC LIMIT 1", (project_id,),
+        )
+
     def update_job(self, job_id: str, **changes: Any) -> None:
         self.update("jobs", "id", job_id, {**changes, "updated_at": now()})
 
@@ -233,6 +249,19 @@ class Store:
             self._conn.execute(
                 "UPDATE jobs SET log = log || ?, updated_at = ? WHERE id = ?", (line + "\n", now(), job_id)
             )
+
+    # reviews ------------------------------------------------------------------
+    def save_review(self, project_id: str, stage: str, ref: str, status: str, note: str | None) -> dict[str, Any]:
+        row = {"id": new_id("rev"), "project_id": project_id, "stage": stage, "ref": ref, "status": status,
+               "note": note, "created_at": now()}
+        self.insert("reviews", row)
+        return row
+
+    def latest_review(self, project_id: str, stage: str) -> dict[str, Any] | None:
+        return self.one(
+            "SELECT * FROM reviews WHERE project_id = ? AND stage = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (project_id, stage),
+        )
 
     # step cache -----------------------------------------------------------------
     def cached_step(self, cache_key: str) -> dict[str, Any] | None:

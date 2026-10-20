@@ -1,4 +1,8 @@
-"""The hand-edited chip catalog (PRD section 8)."""
+"""The chip catalog (PRD section 8).
+
+For now it is the hand-edited `catalog/chips.yaml`. `get_catalog()` is the only loader, so a chip catalog
+API can replace the file later without touching the rest of the engine.
+"""
 
 from __future__ import annotations
 
@@ -62,9 +66,16 @@ class Chip(BaseModel):
 class Vendor(BaseModel):
     id: str
     name: str
+    summary: str = ""
+
+
+class CatalogInfo(BaseModel):
+    version: str
+    source: str
 
 
 class Catalog(BaseModel):
+    info: CatalogInfo
     vendors: list[Vendor]
     cores: dict[str, Core]
     chips: list[Chip]
@@ -105,6 +116,7 @@ def get_catalog() -> Catalog:
     raw: dict[str, Any] = yaml.safe_load(catalog_path().read_text())
     cores = {cid: Core(id=cid, **body) for cid, body in raw["cores"].items()}
     return Catalog(
+        info=CatalogInfo(**raw["catalog"]),
         vendors=[Vendor(**v) for v in raw["vendors"]],
         cores=cores,
         chips=[Chip(**c) for c in raw["chips"]],

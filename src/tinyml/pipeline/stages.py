@@ -38,7 +38,7 @@ from tinyml.ml.artifact import build_artifact, load, model_from_artifact, save
 from tinyml.ml.ladder import RUNG_NAMES, LadderInputs, explain, run_ladder
 from tinyml.ml.split import split_windows
 from tinyml.packaging.package import build_package, report_md
-from tinyml.pipeline.measure import measure_chip
+from tinyml.pipeline.measure import BuildMeasurement, build_signature, chip_measurement, measure_build
 from tinyml.ranking.score import pre_filter, rank
 from tinyml.recipes import get_recipe
 from tinyml.store import Store, new_id, project_dir
@@ -49,6 +49,10 @@ Log = Callable[[str], None]
 
 class StageError(RuntimeError):
     """A stage cannot continue; the message is written for the user."""
+
+
+class JobCancelled(Exception):
+    """The user cancelled the job; raised from the log callback at the next checkpoint."""
 
 
 def _noop(msg: str) -> None:
@@ -88,7 +92,39 @@ def update_spec(store: Store, project_id: str, changes: dict[str, Any]) -> Probl
     new = ProblemSpec(**data)
     get_recipe(new.recipe)
     store.update_project(project_id, spec=new.model_dump())
+    if new.vendor != spec.vendor:
+        kept = [c for c in chip_shortlist(store, project_id) if new.vendor == "any" or
+                get_catalog().chip(c).vendor == new.vendor]
+        store.update_project(project_id, chip_ids=kept)
     return new
+
+
+def chip_shortlist(store: Store, project_id: str) -> list[str]:
+    project = store.project(project_id)
+    return list((project or {}).get("chip_ids") or [])
+
+
+def set_chip_shortlist(store: Store, project_id: str, chip_ids: list[str]) -> list[str]:
+    """The chips the user wants considered. Empty means every chip of the chosen vendor."""
+    spec = _spec(store, project_id)
+    catalog = get_catalog()
+    unique = list(dict.fromkeys(chip_ids))
+    for chip_id in unique:
+        chip = catalog.chip(chip_id)
+        if spec.vendor not in ("any", "") and chip.vendor != spec.vendor:
+            raise StageError(f"{chip.name} is made by {catalog.vendor(chip.vendor).name}, not the vendor you chose")
+    store.update_project(project_id, chip_ids=unique)
+    return unique
+
+
+def candidate_chips(store: Store, project_id: str) -> list[Chip]:
+    """The shortlist if there is one, otherwise every chip of the chosen vendor (or every chip)."""
+    spec = _spec(store, project_id)
+    catalog = get_catalog()
+    shortlist = chip_shortlist(store, project_id)
+    if shortlist:
+        return [catalog.chip(c) for c in shortlist]
+    return catalog.query(vendor=spec.vendor)
 
 
 # ------------------------------------------------------------------------------------- step 3
@@ -237,6 +273,8 @@ def _training_inputs(store: Store, project_id: str, log: Log) -> _Training:
     decision_tols = [decision_tolerance(d, ws.window_samples, t) for d, t in zip(defs, tols, strict=True)]
     split = split_windows(ws, spec.task, normal, spec.seed)
     log(f"Split: {split.method} ({int(split.train.sum())} train, {int(split.test.sum())} test windows)")
+    if split.val_faults is not None and split.val_faults.any():
+        log(f"{int(split.val_faults.sum())} fault windows kept apart for choosing settings, never for the test")
     inp = LadderInputs(F, defs, ws.labels, split, spec.task, normal, recipe, spec.seed,
                        np.array([t["rtol"] for t in decision_tols]), np.array([t["atol"] for t in decision_tols]),
                        unstable)
@@ -264,7 +302,7 @@ def train(store: Store, project_id: str, log: Log = _noop) -> dict[str, Any]:
             path = str(save(artifact, candidates_dir / f"{cand_id}.json"))
         rows.append({"id": cand_id, "rung": cand.rung, "algorithm": cand.algorithm,
                      "metrics": {**cand.metrics, "size_bytes": cand.size_bytes}, "passed": cand.passed,
-                     "selected": False, "note": cand.note, "artifact_path": path})
+                     "selected": False, "note": cand.note, "artifact_path": path, "details": cand.details})
     store.replace_candidates(project_id, rows)
     by_cand = {id(c): row["id"] for c, row in zip(result.candidates, rows, strict=True)}
     recommended = by_cand[id(result.chosen)] if result.chosen is not None else None
@@ -276,6 +314,9 @@ def train(store: Store, project_id: str, log: Log = _noop) -> dict[str, Any]:
     shutil.rmtree(models_dir / "c", ignore_errors=True)
     (models_dir / "training.json").write_text(json.dumps({
         "split": t.split.method, "windows": len(t.ws), "window_samples": t.ws.window_samples, "hop": t.ws.hop,
+        "sample_rate_hz": t.ws.rate, "train_windows": int(t.split.train.sum()), "test_windows": int(t.split.test.sum()),
+        "validation_fault_windows": int(t.inp.val_faults.sum()), "fold_method": t.split.fold_method,
+        "settings_tried": sum(int(c.details.get("settings_tried", 0)) for c in result.candidates),
         "classes": result.classes, "data_request": result.data_request, "explanation": "",
         "recommended": recommended, "best": best, "viz": {}, "rung_names": RUNG_NAMES,
     }, indent=1, default=float))
@@ -422,39 +463,70 @@ def _firmware_hash() -> str:
     return digest.hexdigest()
 
 
-def _measure_cached(store: Store, project_id: str, chip: Chip, gen_dir: Path, golden: GoldenSet, window_bytes: int,
-                    hop_s: float, parity_windows: int | None, log: Log) -> ChipMeasurement:
-    sensor_ma = get_recipe(_spec(store, project_id).recipe).sensor_ma
-    key = f"measure:{project_id}:{chip.id}:{_artifact_hash(project_id)}:{parity_windows}"
+def _measure_signature(store: Store, project_id: str, signature: str, chip: Chip, gen_dir: Path, golden: GoldenSet,
+                       window_bytes: int, parity_windows: int | None, log: Log) -> BuildMeasurement | str:
+    """Build and emulate once for every chip that shares this signature. Returns the measurement or an error."""
+    key = f"build:{project_id}:{signature}:{_artifact_hash(project_id)}:{parity_windows}"
     cached = store.cached_step(key)
     if cached:
-        log(f"{chip.id}: reusing earlier measurement")
-        return ChipMeasurement(**cached)
-    work = project_dir(project_id, "work", chip.id)
+        log(f"{signature}: reusing the earlier build")
+        return BuildMeasurement(**cached)
+    work = project_dir(project_id, "work", signature)
     settings = load_settings()
     attempts = 3
+    error = "could not be built"
     for attempt in range(1, attempts + 1):
         try:
-            log(f"{chip.id}: building and running in the emulator" + (f" (attempt {attempt})" if attempt > 1 else ""))
-            m = measure_chip(chip, gen_dir, golden, work, window_bytes, hop_s, parity_windows,
-                             settings.emulator_timeout_s, sensor_ma)
-            break
+            log(f"{signature}: compiling and running in the emulator" + (f" (attempt {attempt})" if attempt > 1 else ""))
+            build = measure_build(chip, gen_dir, golden, work, window_bytes, parity_windows,
+                                  settings.emulator_timeout_s)
+            store.cache_step(key, "build", build.__dict__)
+            return build
+        except JobCancelled:
+            raise
         except TransientError as exc:
-            if attempt == attempts:
-                m = ChipMeasurement(chip_id=chip.id, status="failed", backend=chip.backend, error=str(exc))
+            error = str(exc)
         except Exception as exc:  # a build error on one chip must not stop the others
-            m = ChipMeasurement(chip_id=chip.id, status="failed", backend=chip.backend, error=str(exc)[:1500])
-            break
-    if m.status == "ok":
-        store.cache_step(key, "measure", m.model_dump())
-    return m
+            return str(exc)[:1500]
+    return error
+
+
+def _measure_chips(store: Store, project_id: str, chips: list[Chip], gen_dir: Path, golden: GoldenSet,
+                   window_bytes: int, hop_s: float, parity_windows: int | None, log: Log) -> dict[str, ChipMeasurement]:
+    """One build per signature, then each chip's own latency, energy and battery numbers from its catalog values."""
+    sensor_ma = get_recipe(_spec(store, project_id).recipe).sensor_ma
+    out: dict[str, ChipMeasurement] = {}
+    groups: dict[str, list[Chip]] = {}
+    for chip in chips:
+        signature, why = build_signature(chip)
+        if signature is None:
+            out[chip.id] = ChipMeasurement(chip_id=chip.id, status="skipped", backend=chip.backend,
+                                           error=f"build tools for this chip are not installed on this computer ({why})")
+            log(f"{chip.id}: skipped, build tools not installed")
+        else:
+            groups.setdefault(signature, []).append(chip)
+    for signature, members in groups.items():
+        if len(members) > 1:
+            log(f"{signature}: one build serves {len(members)} chips ({', '.join(c.part_number for c in members)})")
+    settings = load_settings()
+    with ThreadPoolExecutor(max_workers=max(1, settings.parallel_chip_builds)) as pool:
+        futures = {sig: pool.submit(_measure_signature, store, project_id, sig, members[0], gen_dir, golden,
+                                    window_bytes, parity_windows, log) for sig, members in groups.items()}
+        for sig, fut in futures.items():
+            result = fut.result()
+            for chip in groups[sig]:
+                if isinstance(result, str):
+                    out[chip.id] = ChipMeasurement(chip_id=chip.id, status="failed", backend=chip.backend, error=result)
+                else:
+                    out[chip.id] = chip_measurement(chip, result, hop_s, sensor_ma)
+    return out
 
 
 def rank_chips(store: Store, project_id: str, chip_ids: list[str] | None = None, log: Log = _noop) -> dict[str, Any]:
     spec = _spec(store, project_id)
     artifact, golden, gen_dir = _load_model_files(project_id)
     catalog = get_catalog()
-    chips = [catalog.chip(c) for c in chip_ids] if chip_ids else list(catalog.chips)
+    chips = [catalog.chip(c) for c in chip_ids] if chip_ids else candidate_chips(store, project_id)
     window = artifact["window"]
     window_bytes = window["samples"] * len(window["axes"]) * 4
     hop_s = window["hop"] / window["sample_rate_hz"]
@@ -465,15 +537,11 @@ def rank_chips(store: Store, project_id: str, chip_ids: list[str] | None = None,
         if reason:
             measurements[chip.id] = ChipMeasurement(chip_id=chip.id, status="filtered", backend=chip.backend,
                                                     filtered_reason=reason)
-            log(f"{chip.id}: filtered out ({reason})")
+            log(f"{chip.id}: left out ({reason})")
         else:
             to_build.append(chip)
-    settings = load_settings()
-    with ThreadPoolExecutor(max_workers=max(1, settings.parallel_chip_builds)) as pool:
-        futures = {chip.id: pool.submit(_measure_cached, store, project_id, chip, gen_dir, golden, window_bytes,
-                                        hop_s, 4, log) for chip in to_build}
-        for chip_id, fut in futures.items():
-            measurements[chip_id] = fut.result()
+    log(f"Building for {len(to_build)} of {len(chips)} chips")
+    measurements.update(_measure_chips(store, project_id, to_build, gen_dir, golden, window_bytes, hop_s, 4, log))
     ranked, filtered = rank(chips, measurements, spec, hop_s * 1000.0)
     rows = []
     for r in ranked:
@@ -500,7 +568,7 @@ def build_for_chip(store: Store, project_id: str, chip_id: str, log: Log = _noop
     hop_s = window["hop"] / window["sample_rate_hz"]
 
     log(f"Final build for {chip.name} with the pinned toolchain and seed {spec.seed}")
-    m = _measure_cached(store, project_id, chip, gen_dir, golden, window_bytes, hop_s, None, log)
+    m = _measure_chips(store, project_id, [chip], gen_dir, golden, window_bytes, hop_s, None, log)[chip.id]
     if m.status != "ok":
         raise StageError(f"Could not build for {chip.name}: {m.error}")
     parity = m.parity_detail
